@@ -62,6 +62,42 @@ pub(crate) fn pending_diamond_color(theme: &Theme, accent: Color, tick: u64) -> 
         .unwrap_or(accent)
 }
 
+/// HSV → RGB. `h` is degrees (any real; wrapped to `[0, 360)`); `s`/`v` in `[0, 1]`.
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> Color {
+    let s = s.clamp(0.0, 1.0);
+    let v = v.clamp(0.0, 1.0);
+    let h = ((h % 360.0) + 360.0) % 360.0 / 60.0;
+    let i = h.floor() as i32;
+    let f = h - i as f32;
+    let p = v * (1.0 - s);
+    let q = v * (1.0 - s * f);
+    let t = v * (1.0 - s * (1.0 - f));
+    let (r, g, b) = match i {
+        0 => (v, t, p),
+        1 => (q, v, p),
+        2 => (p, v, t),
+        3 => (p, q, v),
+        4 => (t, p, v),
+        _ => (v, p, q),
+    };
+    Color::Rgb(
+        (r * 255.0).round() as u8,
+        (g * 255.0).round() as u8,
+        (b * 255.0).round() as u8,
+    )
+}
+
+/// Foreground for one braille (or ASCII-fallback) spinner frame.
+///
+/// Hue walks the color wheel in lockstep with the glyph: frame 0 is red,
+/// and one full spinner cycle is one full rainbow. Quantized to the
+/// terminal's color level so 256/16/`NO_COLOR` hosts degrade cleanly.
+fn spinner_rainbow_color(frame_idx: usize, n_frames: usize) -> Color {
+    let n = n_frames.max(1);
+    let hue = (frame_idx % n) as f32 / n as f32 * 360.0;
+    crate::theme::quantize(hsv_to_rgb(hue, 1.0, 1.0))
+}
+
 // ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------
@@ -419,12 +455,21 @@ pub fn render_turn_status(
     // swap the running braille spinner for a pulsing `◆`. Same animation
     // shape the drain-blocked and plan-approval indicators already use,
     // so every "your turn" status reads with one consistent visual cue.
-    let spinner_str = if is_pending_user_input {
-        format!("{} ", crate::glyphs::diamond_filled())
+    // The braille (or ASCII-fallback) spinner walks a rainbow in lockstep
+    // with its rotation; the activity *label* keeps the activity color.
+    let (spinner_str, spinner_style) = if is_pending_user_input {
+        let diamond_color = pending_diamond_color(&theme, theme.accent_user, tick);
+        (
+            format!("{} ", crate::glyphs::diamond_filled()),
+            Style::default().fg(diamond_color),
+        )
     } else {
         let frames = crate::glyphs::braille_spinner_frames();
         let frame_idx = (tick / SPINNER_DIVISOR) as usize % frames.len();
-        format!("{} ", frames[frame_idx])
+        (
+            format!("{} ", frames[frame_idx]),
+            Style::default().fg(spinner_rainbow_color(frame_idx, frames.len())),
+        )
     };
     let spinner_width = spinner_str.width();
 
@@ -480,18 +525,6 @@ pub fn render_turn_status(
     // ── Render left side: spinner + label (truncated) + phase_timer + queued_hint ──
     let mut left_spans: Vec<Span<'static>> = Vec::with_capacity(5);
 
-    // Spinner color: usually inherits the activity color (green for tools,
-    // secondary for thinking/responding, yellow for retries). While the
-    // tool is parked on the user we render `◆` with a smooth pulse from
-    // dim→bright in `accent_user`, matching the drain-blocked and
-    // plan-approval indicators so every "your turn" status has the same
-    // visual cadence.
-    let spinner_style = if is_pending_user_input {
-        let diamond_color = pending_diamond_color(&theme, theme.accent_user, tick);
-        Style::default().fg(diamond_color)
-    } else {
-        activity_style
-    };
     left_spans.push(Span::styled(spinner_str, spinner_style));
 
     // Activity label (potentially truncated)
@@ -688,7 +721,7 @@ fn compute_activity(
             false,
         ),
         (AgentState::TurnRunning, Some(TurnActivity::ToolRunning { title, description })) => {
-            // "Ask" tools (AskUserQuestion) use gray spinner like Thinking —
+            // "Ask" tools (AskUserQuestion) use a gray label like Thinking —
             // green feels out of place when the user is answering questions.
             // Human descriptions (e.g. bash `description`) also use muted
             // secondary — they read as a wait subject (`Wait 5s…`), not a
@@ -1741,5 +1774,104 @@ mod tests {
         // so this assertion guards against an accidental tweak that
         // would silently change the cadence of every "your turn" cue.
         assert_eq!(USER_WAITING_PULSE_SPEED, 0.08);
+    }
+
+    #[test]
+    fn hsv_to_rgb_primary_hues() {
+        assert_eq!(hsv_to_rgb(0.0, 1.0, 1.0), Color::Rgb(255, 0, 0));
+        assert_eq!(hsv_to_rgb(120.0, 1.0, 1.0), Color::Rgb(0, 255, 0));
+        assert_eq!(hsv_to_rgb(240.0, 1.0, 1.0), Color::Rgb(0, 0, 255));
+        assert_eq!(hsv_to_rgb(360.0, 1.0, 1.0), Color::Rgb(255, 0, 0));
+        assert_eq!(hsv_to_rgb(-120.0, 1.0, 1.0), Color::Rgb(0, 0, 255));
+    }
+
+    #[test]
+    fn spinner_rainbow_walks_the_hue_wheel() {
+        let n = crate::glyphs::braille_spinner_frames().len();
+        assert!(n >= 4, "spinner must have enough frames to cycle color");
+        let hues: Vec<_> = (0..n)
+            .map(|i| hsv_to_rgb(i as f32 / n as f32 * 360.0, 1.0, 1.0))
+            .collect();
+        assert_eq!(hues[0], hsv_to_rgb(360.0, 1.0, 1.0), "hue must wrap");
+        let distinct: std::collections::HashSet<_> = hues.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            n,
+            "each spinner frame must land on a distinct hue, got {distinct:?}"
+        );
+        assert_eq!(spinner_rainbow_color(0, n), crate::theme::quantize(hues[0]));
+        assert_eq!(spinner_rainbow_color(n, n), spinner_rainbow_color(0, n));
+    }
+
+    fn render_thinking_buf(tick: u64, pending: bool) -> Buffer {
+        let area = Rect::new(0, 0, 80, 1);
+        let mut buf = Buffer::empty(area);
+        let activity = Some(TurnActivity::Thinking);
+        render_turn_status(
+            &mut buf,
+            area,
+            TurnStatusArgs {
+                state: &AgentState::TurnRunning,
+                activity: &activity,
+                turn_elapsed: Some(Duration::from_secs(1)),
+                activity_started_at: None,
+                tick,
+                drain_blocked: false,
+                buttons: Some(MouseButtons::default()),
+                has_running_execute: false,
+                total_tokens: None,
+                mcp_init_progress: None,
+                is_bash_turn: false,
+                is_pending_user_input: pending,
+                goal_verifying: false,
+                watchers: Watchers::default(),
+                parked: false,
+                flat_background: false,
+                held_queue: 0,
+                held_queue_top_sendable: false,
+            },
+        );
+        buf
+    }
+
+    #[test]
+    fn busy_spinner_uses_rainbow_not_activity_color() {
+        let n = crate::glyphs::braille_spinner_frames().len();
+        let buf0 = render_thinking_buf(0, false);
+        let buf1 = render_thinking_buf(SPINNER_DIVISOR, false);
+        let fg0 = buf0[(0, 0)].style().fg;
+        let fg1 = buf1[(0, 0)].style().fg;
+        assert_eq!(fg0, Some(spinner_rainbow_color(0, n)));
+        assert_eq!(fg1, Some(spinner_rainbow_color(1, n)));
+        let theme = Theme::current();
+        // Label sits after the 1-col glyph + trailing space.
+        assert_eq!(
+            buf0[(2, 0)].style().fg,
+            Some(theme.text_secondary),
+            "activity label must keep the activity color"
+        );
+        if crate::theme::color_support::get().has_color() {
+            assert_ne!(
+                fg0,
+                Some(theme.text_secondary),
+                "spinner must not inherit the Thinking label color"
+            );
+            assert_ne!(fg0, fg1, "spinner color must change with the glyph");
+        }
+    }
+
+    #[test]
+    fn pending_user_input_spinner_is_not_rainbow() {
+        let buf = render_thinking_buf(0, true);
+        let theme = Theme::current();
+        assert_eq!(
+            buf[(0, 0)].symbol(),
+            crate::glyphs::diamond_filled(),
+            "pending input must swap the braille spinner for the pulsing diamond"
+        );
+        assert_eq!(
+            buf[(0, 0)].style().fg,
+            Some(pending_diamond_color(&theme, theme.accent_user, 0))
+        );
     }
 }
