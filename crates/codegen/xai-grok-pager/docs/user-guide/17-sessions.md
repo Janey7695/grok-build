@@ -86,7 +86,7 @@ Use the `/resume` command to browse and resume previous sessions:
 /resume
 ```
 
-This opens a session picker that lists recent sessions for the current workspace. Select a session to resume it. The command takes no arguments.
+This opens a session picker that lists sessions for the current workspace, newest first. Select a session to resume it. The command takes no arguments. The list is not limited to the last 30 days.
 
 Typing in the picker filters the list by title and also searches your conversation content as you type; content matches appear under an "Extended search results" heading. Press `Ctrl+/` to search immediately without the brief pause.
 

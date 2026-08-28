@@ -157,6 +157,22 @@ fn picker_keeps_old_conversation_past_cutoff() {
     assert_eq!(entries[0].source, "conversation");
 }
 #[test]
+fn picker_keeps_old_local_session() {
+    let payload = serde_json::json!({
+            "sessions": [{
+                "sessionId": "local_old",
+                "cwd": "/Users/me/xai",
+                "summary": "Ancient local work",
+                "source": "local",
+                "updatedAt": "2020-01-01T00:00:00Z"
+            }]
+        });
+    let entries = parse_session_picker_entries(&payload);
+    assert_eq!(entries.len(), 1, "old local rows must stay pickable in /resume");
+    assert_eq!(entries[0].id, "local_old");
+    assert_eq!(entries[0].source, "local");
+}
+#[test]
 fn picker_drops_local_with_missing_updated_at() {
     let payload = serde_json::json!({
             "sessions": [{

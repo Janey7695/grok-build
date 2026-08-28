@@ -765,7 +765,7 @@ pub(crate) fn execute(
                 .spawn(async move {
                     let mut params = serde_json::json!({
                     "cwd": cwd.to_string_lossy(),
-                    "limit": 30,
+                    "limit": SESSION_LIST_LIMIT,
                     "headless": headless_policy.as_wire_str(),
                 });
                     if let Some(q) = &query {
@@ -895,7 +895,7 @@ pub(crate) fn execute(
                 .spawn(async move {
                     let params = serde_json::json!({
                     "cwd": cwd.to_string_lossy(),
-                    "limit": 30,
+                    "limit": SESSION_LIST_LIMIT,
                     "headless": xai_grok_shell::session::unified_list::HeadlessPolicy::Exclude
                         .as_wire_str(),
                 });

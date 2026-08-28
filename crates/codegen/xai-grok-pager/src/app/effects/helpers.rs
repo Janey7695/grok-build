@@ -712,14 +712,18 @@ pub(super) fn parse_session_list_scope(payload: &serde_json::Value) -> ListScope
         _ => ListScope::Cwd,
     }
 }
+/// How many history rows `/resume` and the welcome picker request.
+pub(crate) const SESSION_LIST_LIMIT: usize = 200;
+
 /// Parse the `x.ai/session/list` response payload (the unwrapped
 /// `{ "sessions": [...] }` object) into [`SessionPickerEntry`] rows.
 ///
 /// Shared by the resume picker ([`Effect::FetchSessionList`]) and the
 /// dashboard's non-leader idle-session fallback
 /// ([`Effect::FetchDashboardSessions`]) so both produce identical labels.
-/// Sessions older than 30 days, and sessions with no usable user prompt
-/// (empty `summary` after fallbacks), are dropped.
+/// Sessions with no usable user prompt (empty `summary` after fallbacks)
+/// are dropped. Age is not filtered here: the TUI is the way to browse
+/// sessions the user no longer remembers by name.
 pub(super) fn parse_session_picker_entries(
     payload: &serde_json::Value,
 ) -> Vec<crate::app::app_view::SessionPickerEntry> {
@@ -729,8 +733,6 @@ pub(super) fn parse_session_picker_entries(
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    let now = chrono::Utc::now();
-    let cutoff = now - chrono::Duration::days(30);
     entries
         .into_iter()
         .filter_map(|v| {
@@ -765,12 +767,7 @@ pub(super) fn parse_session_picker_entries(
                 .and_then(|s| s.as_str())
                 .and_then(|s| s.parse().ok());
             let updated_at: chrono::DateTime<chrono::Utc> = match parsed_updated {
-                Some(ts) => {
-                    if !is_conversation && ts < cutoff {
-                        return None;
-                    }
-                    ts
-                }
+                Some(ts) => ts,
                 None => {
                     if !is_conversation {
                         return None;
