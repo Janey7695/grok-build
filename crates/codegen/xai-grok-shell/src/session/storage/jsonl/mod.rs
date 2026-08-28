@@ -179,9 +179,10 @@ impl JsonlStorageAdapter {
             let summary_path = session_dir.join(super::SUMMARY_FILE);
             match std::fs::read(&summary_path) {
                 Ok(bytes) => {
-                    if let Ok(summary) = serde_json::from_slice::<Summary>(&bytes)
+                    if let Ok(mut summary) = serde_json::from_slice::<Summary>(&bytes)
                         && !summary.is_hidden()
                     {
+                        summary.session_dir = Some(session_dir);
                         summaries.push(summary);
                     }
                 }

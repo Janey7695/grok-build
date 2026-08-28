@@ -1038,6 +1038,10 @@ pub struct Summary {
     /// committed value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_recap: Option<String>,
+    /// Absolute session directory discovered while listing. Runtime-only —
+    /// never written to `summary.json` so a stale byte count cannot linger.
+    #[serde(skip)]
+    pub session_dir: Option<PathBuf>,
 }
 
 /// Current `grok_home` as a UTF-8 string, or `None` if the path isn't valid UTF-8.
@@ -1097,6 +1101,7 @@ impl Summary {
             last_turn_summary: None,
             last_turn_summary_prompt_id: None,
             last_recap: None,
+            session_dir: None,
         })
     }
 
@@ -2133,6 +2138,31 @@ fn collect_mcp_stderr_logs(files: &mut Vec<CopiedSessionFile>) {
             files.push(CopiedSessionFile { name, data });
         }
     }
+}
+
+/// Logical byte total of files under a local session directory.
+///
+/// Walks `dir` without following symlinks (same contract as grok-home disk
+/// reports). Returns `None` when `dir` is missing or not a directory, so
+/// remote-only / conversation rows are not given a fabricated size.
+pub(crate) fn session_dir_file_bytes(dir: &Path) -> Option<u64> {
+    let meta = std::fs::symlink_metadata(dir).ok()?;
+    if !meta.is_dir() {
+        return None;
+    }
+    let mut total = 0u64;
+    for entry in walkdir::WalkDir::new(dir).follow_links(false) {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        if entry.file_type().is_dir() {
+            continue;
+        }
+        if let Ok(meta) = entry.metadata() {
+            total = total.saturating_add(meta.len());
+        }
+    }
+    Some(total)
 }
 
 /// Recursively collect all files from `dir` into `files`, using paths relative to `base`.

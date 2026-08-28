@@ -246,6 +246,44 @@ fn picker_parses_session_kind() {
     assert_eq!(entries[0].session_kind.as_deref(), Some("headless"));
     assert_eq!(entries[1].session_kind, None);
 }
+/// Local history rows carry `diskBytes` from the session/list wire; remote
+/// and grok.com conversation rows without that field stay unset.
+#[test]
+fn picker_parses_disk_bytes_and_omits_when_absent() {
+    let recent = chrono::Utc::now().to_rfc3339();
+    let payload = serde_json::json!({
+            "sessions": [
+                {
+                    "sessionId": "s_local",
+                    "cwd": "/Users/me/xai",
+                    "summary": "Auth refactor",
+                    "source": "local",
+                    "updatedAt": recent,
+                    "diskBytes": 512
+                },
+                {
+                    "sessionId": "s_remote",
+                    "cwd": "/Users/me/xai",
+                    "summary": "Cloud twin",
+                    "source": "remote",
+                    "updatedAt": recent
+                },
+                {
+                    "sessionId": "conv_abc",
+                    "cwd": "",
+                    "summary": "Compare GPU vendors",
+                    "source": "conversation",
+                    "_meta": { "x.ai/session": { "kind": "chat" } }
+                }
+            ]
+        });
+    let entries = parse_session_picker_entries(&payload);
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0].disk_bytes, Some(512));
+    assert_eq!(entries[1].disk_bytes, None);
+    assert_eq!(entries[2].source, "conversation");
+    assert_eq!(entries[2].disk_bytes, None);
+}
 /// Canary: the empty-summary drop still applies to Build rows.
 #[test]
 fn picker_still_drops_build_row_with_empty_summary() {
@@ -2832,6 +2870,7 @@ fn session_picker_entry_maps_to_dormant_roster_row() {
         last_turn_summary: Some("Fixed the parser".to_string()),
         last_recap: None,
         session_kind: None,
+        disk_bytes: None,
         card_detail: None,
     };
     let roster = session_picker_entry_to_roster(&entry);

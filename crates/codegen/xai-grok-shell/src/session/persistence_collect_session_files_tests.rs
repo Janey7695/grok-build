@@ -89,3 +89,33 @@ fn skips_empty_subdirectories() {
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].name, "file.txt");
 }
+
+#[test]
+fn session_dir_file_bytes_sums_nested_files_and_skips_missing_and_symlinks() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("summary.json"), b"abcd").unwrap();
+    let nested = dir.path().join("goal");
+    fs::create_dir(&nested).unwrap();
+    fs::write(nested.join("plan.md"), b"12345").unwrap();
+
+    assert_eq!(session_dir_file_bytes(dir.path()), Some(4 + 5));
+    assert_eq!(
+        session_dir_file_bytes(&dir.path().join("does-not-exist")),
+        None
+    );
+
+    let outsider = dir.path().join("outsider.bin");
+    fs::write(&outsider, vec![b'z'; 10_000]).unwrap();
+    let linked = TempDir::new().unwrap();
+    fs::write(linked.path().join("inside.txt"), b"ab").unwrap();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&outsider, linked.path().join("to-outsider")).unwrap();
+        let bytes = session_dir_file_bytes(linked.path()).unwrap();
+        assert!(
+            bytes < 10_000,
+            "symlink target contents must not be followed, got {bytes}"
+        );
+        assert!(bytes >= 2, "the real nested file must still count");
+    }
+}

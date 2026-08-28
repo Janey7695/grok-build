@@ -183,6 +183,7 @@ pub(crate) mod hydrate {
             last_turn_summary: None,
             last_turn_summary_prompt_id: None,
             last_recap: None,
+            session_dir: None,
         };
 
         let json = serde_json::to_string_pretty(&summary)?;

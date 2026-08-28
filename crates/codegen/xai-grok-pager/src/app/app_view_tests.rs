@@ -784,6 +784,7 @@ fn tick_demand_fast_while_modal_session_picker_loads() {
         last_turn_summary: None,
         last_recap: None,
         session_kind: None,
+        disk_bytes: None,
         card_detail: None,
     };
     if let Some(crate::views::modal::ActiveModal::SessionPicker { entries, .. }) =
@@ -2121,6 +2122,7 @@ fn welcome_session_entry(id: &str) -> SessionPickerEntry {
         last_turn_summary: None,
         last_recap: None,
         session_kind: None,
+        disk_bytes: None,
         card_detail: None,
     }
 }
@@ -6649,6 +6651,7 @@ fn welcome_picker_f_cycle_disabled_under_chat_mode() {
         last_turn_summary: None,
         last_recap: None,
         session_kind: None,
+        disk_bytes: None,
         card_detail: None,
     };
     let f_key = Event::Key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));

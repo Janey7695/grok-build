@@ -616,6 +616,7 @@ mod tests {
             last_turn_summary: None,
             last_recap: None,
             session_kind: Some("worktree".into()),
+            disk_bytes: None,
         }
     }
     fn row(session_id: &str, updated_at: &str) -> UnifiedRow {

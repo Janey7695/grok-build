@@ -450,6 +450,7 @@ pub(crate) fn map_summary(summary: ForeignSessionSummary) -> SessionPickerEntry 
         last_turn_summary: None,
         last_recap: None,
         session_kind: None,
+        disk_bytes: None,
         card_detail: None,
     }
 }
@@ -562,6 +563,7 @@ mod tests {
             last_turn_summary: None,
             last_recap: None,
             session_kind: None,
+            disk_bytes: None,
             card_detail: None,
         }
     }

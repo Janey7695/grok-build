@@ -106,6 +106,7 @@ pub fn conversation_to_row(c: Conversation, reg: &FacetRegistry) -> UnifiedRow {
         last_turn_summary: None,
         last_recap: None,
         session_kind: None,
+        disk_bytes: None,
     };
     UnifiedRow {
         kind: SessionKind::Chat,

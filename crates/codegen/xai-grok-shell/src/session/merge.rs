@@ -65,6 +65,10 @@ pub struct MergedSession {
     pub last_recap: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_kind: Option<String>,
+    /// Total bytes of files under this session's local directory. Omitted when
+    /// there is no local session directory (remote-only / grok.com rows).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_bytes: Option<u64>,
 }
 
 use crate::session::visibility::HeadlessPolicy;
@@ -281,6 +285,8 @@ pub fn merge(
 ) -> Vec<MergedSession> {
     let mut by_id: HashMap<String, MergedSession> =
         HashMap::with_capacity(remote.len() + local.len());
+    let mut local_dirs: HashMap<String, std::path::PathBuf> =
+        HashMap::with_capacity(local.len());
 
     let query_lower = query.map(|q| q.to_lowercase());
     for s in local {
@@ -302,6 +308,9 @@ pub fn merge(
         let worktree_label = s
             .worktree_label
             .or_else(|| crate::session::worktree::lookup_worktree_label(&s.info.cwd));
+        if let Some(dir) = s.session_dir {
+            local_dirs.insert(id.clone(), dir);
+        }
         by_id.insert(
             id.clone(),
             MergedSession {
@@ -325,6 +334,7 @@ pub fn merge(
                 last_turn_summary: s.last_turn_summary,
                 last_recap: s.last_recap,
                 session_kind: s.session_kind,
+                disk_bytes: None,
             },
         );
     }
@@ -385,6 +395,7 @@ pub fn merge(
                 last_turn_summary: local.last_turn_summary,
                 last_recap: local.last_recap,
                 session_kind: local.session_kind,
+                disk_bytes: None,
             },
         );
     }
@@ -399,7 +410,21 @@ pub fn merge(
     // Dedup empty sessions BEFORE truncating so the final list has `limit` entries.
     dedup_empty_sessions(&mut merged);
     merged.truncate(limit);
+    attach_listed_session_disk_bytes(&mut merged, &local_dirs);
     merged
+}
+
+/// Size only the sessions that survived merge/truncate, from the directory
+/// already enumerated while listing local history. Does not follow symlinks.
+fn attach_listed_session_disk_bytes(
+    sessions: &mut [MergedSession],
+    local_dirs: &HashMap<String, std::path::PathBuf>,
+) {
+    for session in sessions {
+        if let Some(dir) = local_dirs.get(&session.session_id) {
+            session.disk_bytes = crate::session::persistence::session_dir_file_bytes(dir);
+        }
+    }
 }
 
 /// Effective timestamp used to order the merged session list.
@@ -517,6 +542,7 @@ mod tests {
             last_turn_summary: None,
             last_turn_summary_prompt_id: None,
             last_recap: None,
+            session_dir: None,
         }
     }
 
@@ -1398,6 +1424,7 @@ mod tests {
             last_turn_summary: None,
             last_recap: None,
             session_kind: None,
+            disk_bytes: None,
         }
     }
 
@@ -1518,5 +1545,89 @@ mod tests {
         // 9 local sessions across 3 cwds, limit = 5
         let merged = merge(Vec::new(), local, None, &[], 5);
         assert_eq!(merged.len(), 5);
+    }
+
+    fn write_listed_session(
+        root: &std::path::Path,
+        encoded_cwd: &str,
+        cwd: &str,
+        id: &str,
+        extras: &[(&str, &[u8])],
+    ) -> u64 {
+        let dir = root.join("sessions").join(encoded_cwd).join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut summary = make_summary(id, &format!("work {id}"), "2026-06-01T00:00:00Z");
+        summary.info.cwd = cwd.into();
+        let json = serde_json::to_vec_pretty(&summary).unwrap();
+        let mut total = json.len() as u64;
+        std::fs::write(dir.join("summary.json"), &json).unwrap();
+        for (rel, bytes) in extras {
+            let path = dir.join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&path, bytes).unwrap();
+            total += bytes.len() as u64;
+        }
+        total
+    }
+
+    #[tokio::test]
+    async fn list_merge_sizes_listed_session_files_including_nested_and_isolates_siblings() {
+        use crate::session::storage::{JsonlStorageAdapter, StorageAdapter};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cwd = "/proj/app";
+        let encoded = crate::util::grok_home::encode_cwd_dirname(cwd);
+        let a_bytes = write_listed_session(
+            tmp.path(),
+            &encoded,
+            cwd,
+            "sess-a",
+            &[
+                ("chat_history.jsonl", &[b'a'; 100]),
+                ("compaction/seg.md", &[b'n'; 50]),
+            ],
+        );
+        let b_bytes = write_listed_session(
+            tmp.path(),
+            &encoded,
+            cwd,
+            "sess-b",
+            &[("updates.jsonl", &[b'b'; 20])],
+        );
+
+        let adapter = JsonlStorageAdapter::with_root(tmp.path().to_path_buf());
+        let local = adapter.list_sessions(Some(cwd)).await.unwrap();
+        let merged = merge(Vec::new(), local, None, &[], 20);
+
+        let a = merged.iter().find(|s| s.session_id == "sess-a").unwrap();
+        let b = merged.iter().find(|s| s.session_id == "sess-b").unwrap();
+        assert_eq!(
+            a.disk_bytes,
+            Some(a_bytes),
+            "listed size must equal the sum of this session's files (including nested)"
+        );
+        assert_eq!(
+            b.disk_bytes,
+            Some(b_bytes),
+            "sibling session must be sized independently"
+        );
+        assert_ne!(
+            a.disk_bytes, b.disk_bytes,
+            "a sibling's files must not be folded into this session"
+        );
+
+        let remote_only = merge(
+            vec![make_remote("remote-only", "cloud", "2026-06-01T00:00:00Z")],
+            Vec::new(),
+            None,
+            &[],
+            20,
+        );
+        assert_eq!(
+            remote_only[0].disk_bytes, None,
+            "remote-only rows must not get a fabricated size"
+        );
     }
 }

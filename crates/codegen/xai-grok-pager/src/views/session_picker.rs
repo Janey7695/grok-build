@@ -777,7 +777,11 @@ pub(crate) fn build_session_entry_data(
             };
             // Prefer last_active_at; fall back to updated_at (not created_at)
             // so pre-migration sessions don't jump to their creation date.
-            let right_text = format_time_ago(entry.last_active_at.unwrap_or(entry.updated_at));
+            let time_text = format_time_ago(entry.last_active_at.unwrap_or(entry.updated_at));
+            let right_text = match entry.disk_bytes {
+                Some(bytes) => format!("{time_text}  ·  {}", crate::util::format_bytes(bytes)),
+                None => time_text,
+            };
             let is_selected = !state.selection_hidden && fi == state.selected;
             let is_foreign = crate::app::is_foreign_picker_source(&entry.source);
             let is_expanded = !is_foreign && state.expanded.contains(&orig_idx);
@@ -786,6 +790,9 @@ pub(crate) fn build_session_entry_data(
             if is_expanded {
                 field_data.push(("ID".into(), entry.id.clone()));
                 field_data.push(("CWD".into(), entry.cwd.clone()));
+                if let Some(bytes) = entry.disk_bytes {
+                    field_data.push(("Size".into(), crate::util::format_bytes(bytes)));
+                }
                 if let Some(ref model) = entry.model_id {
                     field_data.push(("Model".into(), model.clone()));
                 }
@@ -1167,6 +1174,7 @@ mod tests {
             last_turn_summary: None,
             last_recap: None,
             session_kind: None,
+            disk_bytes: None,
             card_detail: None,
         }
     }
@@ -1836,5 +1844,59 @@ mod tests {
         assert_eq!(session_id_for_direct_load("pasted garbage!!!"), None);
         assert_eq!(session_id_for_direct_load("hello\nworld"), None);
         assert_eq!(session_id_for_direct_load(&format!("{sid}\nextra")), None);
+    }
+
+    #[test]
+    fn local_history_row_renders_human_readable_disk_size_others_omit_it() {
+        let mut local = make_entry("local-1", "repo");
+        local.source = "local".into();
+        local.disk_bytes = Some(512);
+        let mut local_mb = make_entry("local-mb", "repo");
+        local_mb.source = "local".into();
+        local_mb.disk_bytes = Some(1_572_864);
+        let mut remote = make_entry("remote-1", "repo");
+        remote.source = "remote".into();
+        let mut conversation = make_entry("conv-1", "repo");
+        conversation.source = "conversation".into();
+
+        let state = PickerState::default();
+        let built = build_session_entry_data(
+            &[local.clone(), local_mb, remote, conversation],
+            &[0, 1, 2, 3],
+            &state,
+            80,
+        );
+        assert!(
+            built[0].right_text.contains("512 B"),
+            "512-byte local row should render powers-of-1024 size, got {}",
+            built[0].right_text
+        );
+        assert!(
+            built[1].right_text.contains("1.5 MB"),
+            "1.5 MB local row should render powers-of-1024 size, got {}",
+            built[1].right_text
+        );
+        assert!(
+            !built[2].right_text.contains('B'),
+            "remote row without local files must not render a size, got {}",
+            built[2].right_text
+        );
+        assert!(
+            !built[3].right_text.contains('B'),
+            "conversation row without local files must not render a size, got {}",
+            built[3].right_text
+        );
+
+        let mut expanded_state = PickerState::default();
+        expanded_state.expanded.insert(0);
+        let expanded = build_session_entry_data(&[local], &[0], &expanded_state, 80);
+        assert!(
+            expanded[0]
+                .field_data
+                .iter()
+                .any(|(label, value)| label == "Size" && value == "512 B"),
+            "expanded local card should show Size, got {:?}",
+            expanded[0].field_data
+        );
     }
 }

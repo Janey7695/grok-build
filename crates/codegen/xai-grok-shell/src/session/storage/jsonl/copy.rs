@@ -578,6 +578,7 @@ fn fork_summary(
         } else {
             source.last_recap
         },
+        session_dir: None,
     }
 }
 

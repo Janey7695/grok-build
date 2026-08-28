@@ -850,6 +850,10 @@ pub(super) fn parse_session_picker_entries(
                 .or_else(|| v.get("session_kind"))
                 .and_then(|s| s.as_str())
                 .map(String::from);
+            let disk_bytes = v
+                .get("diskBytes")
+                .or_else(|| v.get("disk_bytes"))
+                .and_then(|n| n.as_u64().or_else(|| n.as_i64().and_then(|i| u64::try_from(i).ok())));
             let repo_name = crate::views::session_picker::repo_name_from_cwd(&cwd_str);
             Some(SessionPickerEntry {
                 id,
@@ -868,6 +872,7 @@ pub(super) fn parse_session_picker_entries(
                 last_turn_summary,
                 last_recap,
                 session_kind,
+                disk_bytes,
                 card_detail: None,
             })
         })

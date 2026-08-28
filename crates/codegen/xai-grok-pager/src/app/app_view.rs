@@ -393,6 +393,9 @@ pub struct SessionPickerEntry {
     /// `sessionKind` from the session/list wire (`"headless"`, `"fork"`,
     /// `"worktree"`, …). Drives the picker's Headless page filter.
     pub session_kind: Option<String>,
+    /// Total bytes of files under this session's local directory (`diskBytes`
+    /// on the session/list wire). Absent for remote-only / grok.com rows.
+    pub disk_bytes: Option<u64>,
     /// Lazy-loaded detail for the expanded card view.
     pub card_detail: Option<CardDetail>,
 }
