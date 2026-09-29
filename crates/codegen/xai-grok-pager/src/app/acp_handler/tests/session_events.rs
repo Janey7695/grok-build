@@ -958,6 +958,89 @@
         }
     }
 
+    /// The summary body the shell writes into a checkpoint's user message.
+    const CHECKPOINT_SUMMARY: &str = "This session is being continued from a previous conversation that ran out of context. \
+                                      The summary below covers the earlier portion of the conversation.\n\nSummary:\n1. Fix the parser";
+
+    /// Every session event in `scrollback`, in order.
+    fn session_events_of(scrollback: &ScrollbackState) -> Vec<SessionEvent> {
+        (0..scrollback.len())
+            .filter_map(|i| match scrollback.get(i).map(|e| &e.block) {
+                Some(RenderBlock::SessionEvent(b)) => Some(b.event.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    #[serial_test::serial(GROK_HOME)]
+    fn replay_compaction_pushes_the_checkpoint_summary_below_the_line() {
+        let mut home = crate::test_util::GrokHomeFixture::new();
+        let cwd = home.cwd_str();
+        home.write_compaction_checkpoint(
+            &cwd,
+            "s1",
+            "ckpt",
+            crate::test_util::compaction_summary_message(CHECKPOINT_SUMMARY),
+        );
+
+        let mut session = make_session(Some("s1"));
+        session.cwd = PathBuf::from(&cwd);
+        session.loading_replay = true;
+        let mut scrollback = ScrollbackState::new();
+        let update = XaiSessionUpdate::AutoCompactCompleted {
+            tokens_before: Some(90_000),
+            tokens_after: 20_000,
+            elapsed_ms: Some(500),
+            summary_preview: None,
+        };
+        assert!(apply_session_event(&update, &mut session, &mut scrollback, false));
+
+        let events = session_events_of(&scrollback);
+        assert!(
+            matches!(events.as_slice(), [
+                SessionEvent::CompactionCompleted { .. },
+                SessionEvent::CompactionSummary { summary },
+            ] if summary == CHECKPOINT_SUMMARY.trim()),
+            "replay renders the summary right under the token line: {events:?}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(GROK_HOME)]
+    fn deferred_compaction_flushes_the_checkpoint_summary_below_the_line() {
+        let mut home = crate::test_util::GrokHomeFixture::new();
+        let cwd = home.cwd_str();
+        home.write_compaction_checkpoint(
+            &cwd,
+            "s1",
+            "ckpt",
+            crate::test_util::compaction_summary_message(CHECKPOINT_SUMMARY),
+        );
+
+        let mut session = make_session(Some("s1"));
+        session.cwd = PathBuf::from(&cwd);
+        let mut scrollback = ScrollbackState::new();
+        let update = XaiSessionUpdate::AutoCompactCompleted {
+            tokens_before: Some(90_000),
+            tokens_after: 20_000,
+            elapsed_ms: Some(500),
+            summary_preview: None,
+        };
+        assert!(apply_session_event(&update, &mut session, &mut scrollback, false));
+        assert_eq!(scrollback.len(), 0, "the live line stays deferred");
+
+        session.finish_turn(&mut scrollback);
+        let events = session_events_of(&scrollback);
+        assert!(
+            matches!(events.as_slice(), [
+                SessionEvent::CompactionCompleted { .. },
+                SessionEvent::CompactionSummary { summary },
+            ] if summary == CHECKPOINT_SUMMARY.trim()),
+            "the deferred flush carries the summary too: {events:?}"
+        );
+    }
+
     #[test]
     fn deferred_compaction_flushes_confirmed_count_over_estimate_refresh() {
         let mut agent = make_agent(Some("s1"));

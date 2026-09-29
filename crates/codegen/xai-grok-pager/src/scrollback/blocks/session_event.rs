@@ -23,8 +23,8 @@ use xai_grok_shell::extensions::notification::{
     MODEL_FAMILY_SWITCH_COMPACT_BANNER, MemoryCaptureDebugEntry,
 };
 
-/// Shared text-selection range id for recap body lines (header is excluded).
-const RECAP_BODY_RANGE: u16 = 0;
+/// Shared text-selection range id for foldable-summary body lines (header is excluded).
+const SUMMARY_BODY_RANGE: u16 = 0;
 
 /// Which pager-local memory command a [`SessionEvent::MemoryCommandStarted`] marker belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +92,13 @@ pub enum SessionEvent {
         tokens_after: u64,
         /// How long compaction took (milliseconds).
         elapsed_ms: Option<i64>,
+    },
+    /// The summary text a finished compaction left on disk, shown under its "Context compacted" line.
+    /// The compaction notifications carry only token counts, so the body is read back from the session's
+    /// newest `compaction_checkpoints/<uuid>.json` (see `app::compaction_summary`).
+    CompactionSummary {
+        /// Full summary message, including the "This session is being continued…" preamble.
+        summary: String,
     },
     /// Auto-compaction failed.
     CompactionFailed {
@@ -445,6 +452,8 @@ impl SessionEvent {
                     body
                 }
             }
+            // The body is the whole message; the block header carries the label
+            SessionEvent::CompactionSummary { summary } => summary.clone(),
             SessionEvent::CompactionFailed { error } => {
                 if error.trim().is_empty() {
                     "Compaction failed.".to_string()
@@ -546,12 +555,22 @@ impl SessionEvent {
         }
     }
 
-    /// The recap summary text when this is a [`SessionEvent::Recap`].
-    /// Recap events render in the tool-call visual style (bullet, bold "Recap" header, muted body); other variants stay plain informational lines.
-    /// This accessor is the single branch point the `SessionEventBlock` trait methods use to opt the recap into that style.
-    fn recap_summary(&self) -> Option<&str> {
+    /// The body text of the variants that render in the tool-call visual style (bullet, bold header, muted foldable body): [`SessionEvent::Recap`] and [`SessionEvent::CompactionSummary`].
+    /// This accessor is the single branch point the `SessionEventBlock` trait methods use to opt those variants into that style.
+    fn summary_body(&self) -> Option<&str> {
         match self {
-            SessionEvent::Recap { summary, .. } => Some(summary.as_str()),
+            SessionEvent::Recap { summary, .. } | SessionEvent::CompactionSummary { summary } => {
+                Some(summary.as_str())
+            }
+            _ => None,
+        }
+    }
+
+    /// Header label for a [`Self::summary_body`] variant.
+    fn summary_title(&self) -> Option<&'static str> {
+        match self {
+            SessionEvent::Recap { .. } => Some("Recap"),
+            SessionEvent::CompactionSummary { .. } => Some("Compaction summary"),
             _ => None,
         }
     }
@@ -609,23 +628,23 @@ impl SessionEventBlock {
         Self { event }
     }
 
-    /// A recap with real body content, i.e. not the empty loading spinner or a stray empty recap.
-    /// Gates the interactive affordances (folding and j/k selection) so navigation never lands on a recap that can't fold.
-    fn recap_has_body(&self) -> bool {
+    /// A foldable summary with real body content, i.e. not the empty recap loading spinner or a stray empty recap.
+    /// Gates the interactive affordances (folding and j/k selection) so navigation never lands on a summary that can't fold.
+    fn summary_has_body(&self) -> bool {
         self.event
-            .recap_summary()
+            .summary_body()
             .is_some_and(|s| !s.trim().is_empty())
     }
 
-    /// Render a recap event in the tool-call visual style. While the recap is still being generated the entry is
-    /// `is_running`, so only the header is shown. [`BlockLine::separator`] / [`Selectable::None`] keep drag-highlight
-    /// and copy on the summary body, never the chrome label.
-    fn recap_output(&self, ctx: &BlockContext, summary: &str) -> BlockOutput {
+    /// Render a recap or compaction summary in the tool-call visual style. While a recap is still being generated the
+    /// entry is `is_running`, so only the header is shown. [`BlockLine::separator`] / [`Selectable::None`] keep
+    /// drag-highlight and copy on the summary body, never the chrome label.
+    fn summary_output(&self, ctx: &BlockContext, title: &str, summary: &str) -> BlockOutput {
         let theme = Theme::current();
         let muted_collapsed =
             ctx.mute_when_collapsed(ctx.appearance.scrollback.blocks.tool.muted_collapsed);
 
-        // "Recap" header: bold, neutral primary text (like a tool-call header)
+        // Header: bold, neutral primary text (like a tool-call header)
         // Dimmed to muted gray while collapsed-and-unselected.
         let header_text_style = if muted_collapsed {
             theme.muted()
@@ -635,7 +654,7 @@ impl SessionEventBlock {
         let header_style = header_text_style.add_modifier(Modifier::BOLD);
         // Non-selectable chrome (same as Thinking / tool label prefixes).
         let header_line =
-            || BlockLine::separator(Line::from(Span::styled("Recap".to_string(), header_style)));
+            || BlockLine::separator(Line::from(Span::styled(title.to_string(), header_style)));
 
         // Loading: header only; the animated gray sidebar is the feedback.
         if ctx.is_running {
@@ -646,7 +665,7 @@ impl SessionEventBlock {
 
         match ctx.mode {
             DisplayMode::Collapsed => {
-                let mut spans = vec![Span::styled("Recap".to_string(), header_style)];
+                let mut spans = vec![Span::styled(title.to_string(), header_style)];
                 let preview = summary.lines().next().unwrap_or(summary).trim();
                 if !preview.is_empty() {
                     spans.push(Span::styled(format!("  {preview}"), theme.muted()));
@@ -655,7 +674,7 @@ impl SessionEventBlock {
                     Line::from(spans),
                     ctx.content_width(),
                 );
-                // Only the preview span is copyable, never the "Recap" label
+                // Only the preview span is copyable, never the header label
                 // No preview (empty after trim) means fully non-selectable
                 let selectable = if preview.is_empty() {
                     Selectable::None
@@ -666,7 +685,7 @@ impl SessionEventBlock {
                     lines: vec![BlockLine {
                         content: line,
                         selectable,
-                        selection_range: (!preview.is_empty()).then_some(RECAP_BODY_RANGE),
+                        selection_range: (!preview.is_empty()).then_some(SUMMARY_BODY_RANGE),
                         selection_text: (!preview.is_empty()).then(|| preview.to_string()),
                         ..Default::default()
                     }],
@@ -685,7 +704,7 @@ impl SessionEventBlock {
                 for wrapped_line in wrapped {
                     lines.push(
                         BlockLine::styled(wrapped_line)
-                            .with_selection_range(Some(RECAP_BODY_RANGE)),
+                            .with_selection_range(Some(SUMMARY_BODY_RANGE)),
                     );
                 }
 
@@ -697,9 +716,13 @@ impl SessionEventBlock {
 
 impl BlockContent for SessionEventBlock {
     fn output(&self, ctx: &BlockContext) -> BlockOutput {
-        // Recap renders in the tool-call style (bullet, bold header, body)
-        if let Some(summary) = self.event.recap_summary() {
-            return self.recap_output(ctx, summary);
+        // Recap and compaction summary render in the tool-call style (bullet, bold header, body)
+        if let Some(summary) = self.event.summary_body() {
+            return self.summary_output(
+                ctx,
+                self.event.summary_title().unwrap_or("Recap"),
+                summary,
+            );
         }
 
         let theme = Theme::current();
@@ -735,7 +758,7 @@ impl BlockContent for SessionEventBlock {
 
     fn accent(&self, ctx: &BlockContext) -> Option<AccentStyle> {
         let theme = Theme::current();
-        if self.event.recap_summary().is_some() {
+        if self.event.summary_body().is_some() {
             // Loading: animated sidebar so there's feedback that the recap is being generated
             // Gray rather than the magenta `accent_running`: the recap is a passive marker, not an active tool turn
             if ctx.is_running {
@@ -753,10 +776,10 @@ impl BlockContent for SessionEventBlock {
     }
 
     fn bullet(&self, ctx: &BlockContext) -> Option<AccentStyle> {
-        // Recap: animated dot while loading; default gray dot when collapsed-idle; accent color when expanded
+        // Recap / compaction summary: animated dot while loading; default gray dot when collapsed-idle; accent color when expanded
         // A hook outcome keeps the default gray, matching its muted text; other events never show a bullet
         if matches!(self.event, SessionEvent::HookOutcome { .. })
-            || (self.event.recap_summary().is_some()
+            || (self.event.summary_body().is_some()
                 && !ctx.is_running
                 && ctx.mode == DisplayMode::Collapsed)
         {
@@ -774,23 +797,27 @@ impl BlockContent for SessionEventBlock {
     }
 
     fn is_foldable(&self) -> bool {
-        // A recap with body content folds; other events are single informational lines with nothing to collapse
-        self.recap_has_body()
+        // A summary with body content folds; other events are single informational lines with nothing to collapse
+        self.summary_has_body()
     }
 
     fn is_selectable(&self) -> bool {
-        // Recap is tool-like: navigable so it can be folded, but only once it has body content (mirrors `is_foldable`)
+        // Expandable summaries are tool-like: navigable so they can be folded, but only once they have body content (mirrors `is_foldable`)
         // That way j/k never lands on the loading spinner or an empty recap. Other events stay non-interactive.
-        self.recap_has_body()
+        self.summary_has_body()
     }
 
     fn default_display_mode(&self) -> DisplayMode {
-        DisplayMode::Expanded
+        // The compaction summary is long and lands right under the line that already states the outcome, so it starts folded; every other event is one line.
+        match self.event {
+            SessionEvent::CompactionSummary { .. } => DisplayMode::Collapsed,
+            _ => DisplayMode::Expanded,
+        }
     }
 
     fn has_bullet(&self, ctx: &BlockContext) -> bool {
-        // Recap and hook outcomes only, gated on the shared tool bullet so they track the tool rows' appearance setting
-        (self.event.recap_summary().is_some()
+        // Recap, compaction summary, and hook outcomes only, gated on the shared tool bullet so they track the tool rows' appearance setting
+        (self.event.summary_body().is_some()
             || matches!(self.event, SessionEvent::HookOutcome { .. }))
             && ctx
                 .appearance
@@ -1518,5 +1545,80 @@ mod tests {
         assert!(!block.is_selectable());
         assert!(!block.has_bullet(&ctx()));
         assert_eq!(block.accent(&ctx()), None);
+    }
+
+    fn compaction_summary_block(summary: &str) -> SessionEventBlock {
+        SessionEventBlock::new(SessionEvent::CompactionSummary {
+            summary: summary.into(),
+        })
+    }
+
+    #[test]
+    fn compaction_summary_message_is_the_body() {
+        let event = SessionEvent::CompactionSummary {
+            summary: "Summary:\n1. Fix the parser".into(),
+        };
+        assert_eq!(event.message(), "Summary:\n1. Fix the parser");
+    }
+
+    #[test]
+    fn compaction_summary_is_folded_selectable_and_bulleted_by_default() {
+        let block = compaction_summary_block("Summary:\n1. Fix the parser");
+        assert_eq!(
+            block.default_display_mode(),
+            DisplayMode::Collapsed,
+            "the summary lands under the line that already states the outcome, so it starts folded"
+        );
+        assert!(block.is_foldable(), "it folds like a tool call");
+        assert!(
+            block.is_selectable(),
+            "it is navigable so it can be expanded"
+        );
+        assert!(block.has_bullet(&ctx()), "it takes the shared tool bullet");
+    }
+
+    #[test]
+    fn compaction_summary_collapsed_shows_label_and_first_line_preview() {
+        let block = compaction_summary_block("First line of summary.\nSecond line.");
+        let out = block.output(&recap_ctx(DisplayMode::Collapsed, false));
+        assert_eq!(out.lines.len(), 1, "collapsed summary is a single line");
+        let text = plain(nth(&out, 0));
+        assert!(
+            text.starts_with("Compaction summary"),
+            "starts with the header: {text}"
+        );
+        assert_eq!(
+            text, "Compaction summary  First line of summary.",
+            "preview is the first body line"
+        );
+        let line = nth(&out, 0);
+        assert!(
+            matches!(&line.selectable, Selectable::Spans(r) if *r == (1..2)),
+            "only the preview is copyable, not the label: {:?}",
+            line.selectable
+        );
+        assert_eq!(
+            line.selection_text.as_deref(),
+            Some("First line of summary.")
+        );
+    }
+
+    #[test]
+    fn compaction_summary_expanded_shows_header_and_full_body() {
+        let block = compaction_summary_block("First line of summary.\nSecond line.");
+        let out = block.output(&recap_ctx(DisplayMode::Expanded, false));
+        assert_eq!(plain(nth(&out, 0)), "Compaction summary");
+        let body = out.lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+        assert!(
+            body.contains("First line of summary.") && body.contains("Second line."),
+            "every body line is shown: {body}"
+        );
+    }
+
+    #[test]
+    fn empty_compaction_summary_is_not_foldable() {
+        let block = compaction_summary_block("   ");
+        assert!(!block.is_foldable());
+        assert!(!block.is_selectable());
     }
 }

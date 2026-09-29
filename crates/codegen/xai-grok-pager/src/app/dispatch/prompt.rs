@@ -1976,6 +1976,10 @@ pub(super) fn handle_compact_complete(
                         elapsed: elapsed.unwrap_or_default(),
                     },
                 ));
+                crate::app::compaction_summary::push_session_summary(
+                    &mut agent.scrollback,
+                    &agent.session,
+                );
             }
             // Typed kind with old-shell text fallback, per `compact_error`.
             Err(err) if was_cancelling || err.cancelled => {

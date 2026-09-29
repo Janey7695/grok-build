@@ -914,8 +914,11 @@ impl AgentSession {
         estimate_after: u64,
         elapsed_ms: Option<i64>,
     ) {
+        let checkpoints_dir = self.session_id.as_ref().map(|session_id| {
+            crate::app::compaction_summary::checkpoints_dir(session_id.0.as_ref(), &self.cwd)
+        });
         self.tracker
-            .defer_compaction(tokens_before, estimate_after, elapsed_ms);
+            .defer_compaction(tokens_before, estimate_after, elapsed_ms, checkpoints_dir);
     }
     pub fn note_context_used(&mut self, used: u64) {
         self.tracker.note_context_used(used);

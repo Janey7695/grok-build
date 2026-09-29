@@ -1680,6 +1680,7 @@ pub(super) fn apply_session_event(
                         elapsed_ms: *elapsed_ms,
                     },
                 ));
+                crate::app::compaction_summary::push_session_summary(scrollback, session);
             } else {
                 session.defer_compaction(*tokens_before, *tokens_after, *elapsed_ms);
             }

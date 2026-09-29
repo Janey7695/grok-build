@@ -17,6 +17,7 @@ pub mod bundle;
 pub(crate) mod cancel_latency;
 pub mod cli;
 pub(crate) mod command_catalog;
+pub(crate) mod compaction_summary;
 pub mod consent;
 pub(crate) mod deferred_subagent_finishes;
 pub use crate::link_opener;

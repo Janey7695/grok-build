@@ -1,15 +1,16 @@
 //! Pure functions for exporting a conversation transcript as human-readable Markdown.
 //!
 //! Used by the `/export` slash command (and its dispatch handler).
-//! The converter walks `RenderBlock`s and produces `## User` / `## Assistant` / `## Tools` sections with compact one-line tool summaries.
+//! The converter walks `RenderBlock`s and produces `## User` / `## Assistant` / `## Tools` / `## Compaction summary` sections with compact one-line tool summaries.
 //! Non-conversation blocks (system chrome, thinking, subagent lifecycle, etc.) are skipped.
 //! The output stays useful for "continue elsewhere" or archival.
 
+use super::blocks::SessionEvent;
 use super::{RenderBlock, ToolCallBlock};
 
 /// The output is a document meant for saving to a file or the clipboard. `User` for user prompts (raw text).
 /// `Tools` section with one-line summaries for every tool call kind. Consecutive assistant messages are coalesced
-/// under a single header. Thinking / system / subagent / credit / etc. blocks are skipped.
+/// under a single header. A compaction summary keeps its own section; thinking / system / subagent / credit / etc. blocks are skipped.
 pub fn render_blocks_to_markdown<'a>(blocks: impl IntoIterator<Item = &'a RenderBlock>) -> String {
     let mut out = String::new();
     let mut last_was_agent = false;
@@ -50,7 +51,20 @@ pub fn render_blocks_to_markdown<'a>(blocks: impl IntoIterator<Item = &'a Render
                 out.push('\n');
                 last_was_agent = false;
             }
-            // Skip all non-conversation chrome: Thinking, System, SessionEvent, BgTask, Subagent, Btw, Stub, etc
+            // The compaction summary stands in for the turns it replaced, so it is conversation content rather than chrome
+            RenderBlock::SessionEvent(b) => {
+                if let SessionEvent::CompactionSummary { summary } = &b.event {
+                    if in_tools_section {
+                        out.push('\n');
+                        in_tools_section = false;
+                    }
+                    out.push_str("## Compaction summary\n\n");
+                    out.push_str(summary.trim());
+                    out.push_str("\n\n");
+                    last_was_agent = false;
+                }
+            }
+            // Skip all non-conversation chrome: Thinking, System, other SessionEvents, BgTask, Subagent, Btw, Stub, etc
             // A skipped Thinking block leaves `last_was_agent` set, so agent messages around it share one header
             _ => {}
         }
@@ -98,5 +112,19 @@ mod tests {
     fn empty_blocks_yield_empty_string() {
         let out = render_blocks_to_markdown(std::iter::empty::<&RenderBlock>());
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn compaction_summary_is_exported_as_its_own_section() {
+        let summary = RenderBlock::session_event(SessionEvent::CompactionSummary {
+            summary: "Summary:\n1. Fix the parser".into(),
+        });
+        let completed = RenderBlock::session_event(SessionEvent::CompactionCompleted {
+            tokens_before: Some(90_000),
+            tokens_after: 20_000,
+            elapsed_ms: None,
+        });
+        let out = render_blocks_to_markdown([&completed, &summary]);
+        assert_eq!(out, "## Compaction summary\n\nSummary:\n1. Fix the parser");
     }
 }

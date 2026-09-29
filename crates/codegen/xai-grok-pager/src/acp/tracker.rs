@@ -323,6 +323,9 @@ pub struct PendingCompaction {
     pub estimate_after: u64,
     pub elapsed_ms: Option<i64>,
     pub last_used: Option<u64>,
+    /// The session's `compaction_checkpoints` directory, so the flush can read back the summary text.
+    /// Resolved by the caller: the tracker has no session directory of its own.
+    pub checkpoints_dir: Option<std::path::PathBuf>,
 }
 /// Names one batch on both `HookRunStarted` and `HookExecution`; an outcome ends the phase only for the batch that armed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -616,12 +619,14 @@ impl AcpUpdateTracker {
         tokens_before: Option<u64>,
         estimate_after: u64,
         elapsed_ms: Option<i64>,
+        checkpoints_dir: Option<std::path::PathBuf>,
     ) {
         self.pending_compaction = Some(PendingCompaction {
             tokens_before,
             estimate_after,
             elapsed_ms,
             last_used: None,
+            checkpoints_dir,
         });
     }
     pub fn note_context_used(&mut self, used: u64) {
@@ -1038,6 +1043,9 @@ impl AcpUpdateTracker {
                     elapsed_ms: pending.elapsed_ms,
                 },
             ));
+            if let Some(dir) = pending.checkpoints_dir.as_deref() {
+                crate::app::compaction_summary::push_summary_from_dir(scrollback, dir);
+            }
         }
         self.last_thinking_elapsed_ms = None;
         self.last_stream_start_ms = None;

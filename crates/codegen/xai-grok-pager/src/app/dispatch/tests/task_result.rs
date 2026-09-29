@@ -3316,6 +3316,16 @@ fn session_list_nonempty_partial_modal_toasts_in_chat_mode_only() {
     );
 }
 
+/// Every session event in `agent`'s scrollback, in order.
+fn session_events_of(agent: &AgentView) -> Vec<SessionEvent> {
+    (0..agent.scrollback.len())
+        .filter_map(|i| match agent.scrollback.entry(i).map(|e| &e.block) {
+            Some(RenderBlock::SessionEvent(ev)) => Some(ev.event.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Drive `CompactComplete` with a wire error mapped exactly as the `Effect::Compact` arm maps it, and return the resulting session events.
 fn compact_complete_events_for(wire_error: acp::Error) -> Vec<SessionEvent> {
     let mut app = test_app_with_agent();
@@ -3332,13 +3342,48 @@ fn compact_complete_events_for(wire_error: acp::Error) -> Vec<SessionEvent> {
         },
         &mut app,
     );
-    let agent = &expect_agent(&app, id);
-    (0..agent.scrollback.len())
-        .filter_map(|i| match agent.scrollback.entry(i).map(|e| &e.block) {
-            Some(RenderBlock::SessionEvent(ev)) => Some(ev.event.clone()),
-            _ => None,
-        })
-        .collect()
+    session_events_of(expect_agent(&app, id))
+}
+
+/// The summary body the shell writes into a checkpoint's user message.
+const CHECKPOINT_SUMMARY: &str = "This session is being continued from a previous conversation that ran out of context. \
+                                  The summary below covers the earlier portion of the conversation.\n\nSummary:\n1. Fix the parser";
+
+#[test]
+#[serial_test::serial(GROK_HOME)]
+fn compact_complete_pushes_the_checkpoint_summary_below_the_line() {
+    let mut home = crate::test_util::GrokHomeFixture::new();
+    let cwd = home.cwd_str();
+    home.write_compaction_checkpoint(
+        &cwd,
+        "test-session",
+        "ckpt",
+        crate::test_util::compaction_summary_message(CHECKPOINT_SUMMARY),
+    );
+
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    {
+        let session = &mut app.agents.get_mut(&id).unwrap().session;
+        session.cwd = PathBuf::from(&cwd);
+        session.start_command(crate::app::agent::AgentCommand::Compact);
+    }
+    dispatch_task_result(
+        TaskResult::CompactComplete {
+            agent_id: id,
+            result: Ok(()),
+        },
+        &mut app,
+    );
+
+    let events = session_events_of(expect_agent(&app, id));
+    assert!(
+        matches!(events.as_slice(), [
+            SessionEvent::CompactCompleted { .. },
+            SessionEvent::CompactionSummary { summary },
+        ] if summary == CHECKPOINT_SUMMARY.trim()),
+        "manual /compact renders the summary right under its completion line: {events:?}"
+    );
 }
 
 fn compaction_failed_message(events: &[SessionEvent]) -> Option<String> {

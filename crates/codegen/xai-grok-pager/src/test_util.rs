@@ -202,6 +202,35 @@ impl GrokHomeFixture {
         }
         std::fs::write(dir.join("summary.json"), serde_json::to_vec(&v).unwrap()).unwrap();
     }
+    /// Write a compaction checkpoint for `id` under `cwd`, holding `message` as its only history item.
+    /// `message` is a wire-shaped `ConversationItem`, so tests can pick the user (array) or assistant (string) content form.
+    pub fn write_compaction_checkpoint(
+        &mut self,
+        cwd: &str,
+        id: &str,
+        file_stem: &str,
+        message: serde_json::Value,
+    ) {
+        let sessions_cwd_dir = Self::sessions_cwd_dir(cwd);
+        if !self.cleanup.contains(&sessions_cwd_dir) {
+            self.cleanup.push(sessions_cwd_dir.clone());
+        }
+        let dir = sessions_cwd_dir.join(id).join("compaction_checkpoints");
+        std::fs::create_dir_all(&dir).unwrap();
+        let checkpoint = serde_json::json!({
+            "checkpoint_id": file_stem,
+            "prompt_index_at_compaction": 0,
+            "compacted_history": [message],
+            "schema_version": 1,
+            "created_at": "2026-07-01T00:00:00Z",
+        });
+        std::fs::write(
+            dir.join(format!("{file_stem}.json")),
+            serde_json::to_vec(&checkpoint).unwrap(),
+        )
+        .unwrap();
+    }
+
     /// Delete a previously written session dir, so a test can simulate a concurrent delete.
     pub fn remove_session(&self, cwd: &str, id: &str) {
         let _ = std::fs::remove_dir_all(Self::sessions_cwd_dir(cwd).join(id));
@@ -213,6 +242,11 @@ impl GrokHomeFixture {
             .join(&encoded)
     }
 }
+/// Wire shape of the summary message a compaction checkpoint carries as a user item.
+pub fn compaction_summary_message(text: &str) -> serde_json::Value {
+    serde_json::json!({ "type": "user", "content": [{ "type": "text", "text": text }] })
+}
+
 /// On-disk git checkout living under a tempdir. Dropping the fixture deletes it.
 pub struct TempGitRepo {
     _dir: tempfile::TempDir,
