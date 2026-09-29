@@ -13,7 +13,9 @@ fn expect_agent(app: &AppView, id: AgentId) -> &AgentView {
     agent
 }
 
+use crate::app::acp_handler::apply_session_event_for_test;
 use crate::app::subagent::{SubagentLifecycleReduction, SubagentLifecycleTransition};
+use xai_grok_shell::extensions::notification::SessionUpdate as XaiSessionUpdate;
 use xai_grok_shell::session::helpers::session_compact::COMPACT_CANCELLED_MSG;
 use xai_grok_shell::session::unified_list::ListScope;
 
@@ -3349,29 +3351,59 @@ fn compact_complete_events_for(wire_error: acp::Error) -> Vec<SessionEvent> {
 const CHECKPOINT_SUMMARY: &str = "This session is being continued from a previous conversation that ran out of context. \
                                   The summary below covers the earlier portion of the conversation.\n\nSummary:\n1. Fix the parser";
 
-#[test]
-#[serial_test::serial(GROK_HOME)]
-fn compact_complete_pushes_the_checkpoint_summary_below_the_line() {
-    let mut home = crate::test_util::GrokHomeFixture::new();
-    let cwd = home.cwd_str();
-    home.write_compaction_checkpoint(
-        &cwd,
-        "test-session",
-        "ckpt",
-        crate::test_util::compaction_summary_message(CHECKPOINT_SUMMARY),
-    );
+/// Put `app`'s only agent into the manual `/compact` state.
+fn start_manual_compact(app: &mut AppView, id: AgentId) {
+    app.agents
+        .get_mut(&id)
+        .unwrap()
+        .session
+        .start_command(crate::app::agent::AgentCommand::Compact);
+}
 
+#[test]
+fn compact_complete_asks_for_the_checkpoint_summary() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
-    {
-        let session = &mut app.agents.get_mut(&id).unwrap().session;
-        session.cwd = PathBuf::from(&cwd);
-        session.start_command(crate::app::agent::AgentCommand::Compact);
-    }
-    dispatch_task_result(
+    start_manual_compact(&mut app, id);
+    let effects = dispatch_task_result(
         TaskResult::CompactComplete {
             agent_id: id,
             result: Ok(()),
+        },
+        &mut app,
+    );
+
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::FetchCompactionSummary { agent_id, session_id, .. }]
+                if *agent_id == id && session_id == "test-session"
+        ),
+        "the completion line is pushed now and the summary read comes back later: {effects:?}"
+    );
+    let events = session_events_of(expect_agent(&app, id));
+    assert!(
+        matches!(events.as_slice(), [SessionEvent::CompactCompleted { .. }]),
+        "no summary until the read answers: {events:?}"
+    );
+}
+
+#[test]
+fn loaded_compaction_summary_lands_below_the_completion_line() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    start_manual_compact(&mut app, id);
+    let _ = dispatch_task_result(
+        TaskResult::CompactComplete {
+            agent_id: id,
+            result: Ok(()),
+        },
+        &mut app,
+    );
+    dispatch_task_result(
+        TaskResult::CompactionSummaryLoaded {
+            agent_id: id,
+            summary: Some(CHECKPOINT_SUMMARY.trim().to_string()),
         },
         &mut app,
     );
@@ -3384,6 +3416,51 @@ fn compact_complete_pushes_the_checkpoint_summary_below_the_line() {
         ] if summary == CHECKPOINT_SUMMARY.trim()),
         "manual /compact renders the summary right under its completion line: {events:?}"
     );
+}
+
+#[test]
+fn manual_compaction_summary_is_not_repeated_by_the_deferred_flush() {
+    let cwd = tempfile::tempdir().expect("cwd tempdir");
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    // A private cwd, so the deferred read cannot find another test's checkpoint.
+    app.agents.get_mut(&id).unwrap().session.cwd = cwd.path().to_path_buf();
+    start_manual_compact(&mut app, id);
+    let _ = dispatch_task_result(
+        TaskResult::CompactComplete {
+            agent_id: id,
+            result: Ok(()),
+        },
+        &mut app,
+    );
+    // The shell sends `auto_compact_completed` for a manual /compact too, which the pager defers to turn end.
+    let update = XaiSessionUpdate::AutoCompactCompleted {
+        tokens_before: Some(263_909),
+        tokens_after: 19_985,
+        elapsed_ms: None,
+        summary_preview: None,
+    };
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        let _ = apply_session_event_for_test(&update, &mut agent.session, &mut agent.scrollback);
+    }
+    dispatch_task_result(
+        TaskResult::CompactionSummaryLoaded {
+            agent_id: id,
+            summary: Some(CHECKPOINT_SUMMARY.trim().to_string()),
+        },
+        &mut app,
+    );
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.session.finish_turn(&mut agent.scrollback);
+    }
+
+    let summaries = session_events_of(expect_agent(&app, id))
+        .into_iter()
+        .filter(|e| matches!(e, SessionEvent::CompactionSummary { .. }))
+        .count();
+    assert_eq!(summaries, 1, "one summary per compaction, not one per line");
 }
 
 fn compaction_failed_message(events: &[SessionEvent]) -> Option<String> {

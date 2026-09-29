@@ -1505,6 +1505,14 @@ pub enum Effect {
     /// This is the non-leader fallback for the FleetView roster.
     /// Issued while the dashboard is open and NOT in leader mode so the dashboard shows idle sessions instead of being empty.
     FetchDashboardSessions,
+    /// Read a just-finished manual `/compact`'s summary off disk.
+    /// The shell queues the checkpoint to its persistence thread, so the task waits (off the event loop) for the
+    /// file instead of reading it the moment the RPC answers.
+    FetchCompactionSummary {
+        agent_id: AgentId,
+        session_id: String,
+        cwd: std::path::PathBuf,
+    },
     /// Lazily open dashboard v2's process-owned SQLite store and read its initial snapshot off the event-loop thread.
     LoadWorkspaceSnapshot { db_path: std::path::PathBuf },
     /// Apply one mutation; [`TaskResult::WorkspaceWriteCompleted`] carries the handle and mutation back.
@@ -2530,6 +2538,11 @@ pub enum TaskResult {
     /// A fetch failure yields an empty list (silent; the next poll retries).
     DashboardSessionsLoaded {
         sessions: Vec<crate::app::roster::RosterEntry>,
+    },
+    /// Summary text of a finished manual `/compact` (`None` when the checkpoint never appeared).
+    CompactionSummaryLoaded {
+        agent_id: AgentId,
+        summary: Option<String>,
     },
     /// Dashboard v2's process-owned store and initial consistent view.
     WorkspaceSnapshotLoaded {

@@ -129,6 +129,39 @@ fn oversized_checkpoint_is_skipped_for_the_next_one() {
     );
 }
 
+#[test]
+fn wait_for_summary_waits_for_a_checkpoint_that_lands_late() {
+    let home = tempdir();
+    let dir = home.path().join("compaction_checkpoints");
+    let writer_dir = dir.clone();
+    let bytes = checkpoint(user_message(SUMMARY));
+    // The shell queues the checkpoint to its persistence thread, so the file can appear after the compaction is
+    // already reported.
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(120));
+        write_checkpoint(&writer_dir, "ckpt", &bytes);
+    });
+
+    assert_eq!(
+        wait_for_summary(&dir, Duration::from_secs(2)).as_deref(),
+        Some(SUMMARY.trim()),
+        "a checkpoint that lands late is still picked up"
+    );
+}
+
+#[test]
+fn wait_for_summary_gives_up_after_its_budget() {
+    let home = tempdir();
+    let dir = home.path().join("compaction_checkpoints");
+
+    assert_eq!(wait_for_summary(&dir, Duration::from_millis(100)), None);
+    assert_eq!(
+        wait_for_summary(&dir, Duration::ZERO),
+        None,
+        "a zero budget reads once"
+    );
+}
+
 fn set_mtime(path: &Path, unix_secs: u64) {
     let modified = std::time::UNIX_EPOCH + Duration::from_secs(unix_secs);
     std::fs::File::options()

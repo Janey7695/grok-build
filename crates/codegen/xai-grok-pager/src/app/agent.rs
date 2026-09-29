@@ -923,6 +923,10 @@ impl AgentSession {
     pub fn note_context_used(&mut self, used: u64) {
         self.tracker.note_context_used(used);
     }
+    /// Keep the pending compaction's summary from being shown twice: manual `/compact` renders it itself.
+    pub fn note_compaction_summary_shown(&mut self) {
+        self.tracker.note_compaction_summary_shown();
+    }
     /// Set a retry-related activity override on the tracker.
     /// Called from ACP handler when `RetryState::Retrying` arrives.
     /// Auto-cleared when normal streaming data resumes.

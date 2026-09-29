@@ -21,8 +21,16 @@ const SUMMARY_MARKER: &str = "This session is being continued from a previous co
 /// Skip checkpoints above this size. Real files are tens of KB; a larger one is not worth reading on the UI thread.
 const MAX_CHECKPOINT_BYTES: u64 = 16 * 1024 * 1024;
 
-/// Wait before re-reading once. The checkpoint rides the async persistence queue, so the notification can beat its file.
-const RETRY_DELAY: Duration = Duration::from_millis(40);
+/// Poll interval while waiting for a just-finished compaction's checkpoint.
+const POLL_INTERVAL: Duration = Duration::from_millis(40);
+
+/// How long the manual `/compact` path waits for its checkpoint. That read runs on the blocking pool, so the
+/// budget can be generous: the shell queues the file to its persistence thread and the RPC can answer first.
+pub(crate) const MANUAL_COMPACT_WAIT: Duration = Duration::from_secs(2);
+
+/// How long a path that pushes straight at the completion notification waits. Short, because it runs on the
+/// event loop and a checkpoint that is already on disk answers on the first attempt.
+const IMMEDIATE_WAIT: Duration = Duration::from_millis(120);
 
 /// `compaction_checkpoints` directory of `session_id` under `cwd`, built the same way the shell builds its session directory.
 pub(crate) fn checkpoints_dir(session_id: &str, cwd: &Path) -> PathBuf {
@@ -34,21 +42,34 @@ pub(crate) fn checkpoints_dir(session_id: &str, cwd: &Path) -> PathBuf {
         .join("compaction_checkpoints")
 }
 
-/// Summary body from the newest checkpoint of a session. `None` when it cannot be read.
-pub(crate) fn load_compaction_summary(session_id: &str, cwd: &Path) -> Option<String> {
-    load_summary_from_dir(&checkpoints_dir(session_id, cwd))
+/// Summary body from the newest checkpoint of a session, waiting up to `budget` for one to appear.
+pub(crate) fn load_compaction_summary(
+    session_id: &str,
+    cwd: &Path,
+    budget: Duration,
+) -> Option<String> {
+    wait_for_summary(&checkpoints_dir(session_id, cwd), budget)
+}
+
+/// Summary body from the newest checkpoint in `dir`, waiting up to `budget` for one to appear.
+/// The checkpoint is queued to the shell's persistence thread, so a caller that runs the moment a compaction
+/// finishes can beat its own file. `Duration::ZERO` reads once.
+pub(crate) fn wait_for_summary(dir: &Path, budget: Duration) -> Option<String> {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        if let Some(summary) = read_newest_summary(dir) {
+            return Some(summary);
+        }
+        if std::time::Instant::now() >= deadline {
+            tracing::debug!(dir = %dir.display(), "no compaction summary before the wait ran out");
+            return None;
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
 }
 
 /// Summary body from the newest checkpoint in an already-resolved checkpoints directory. `None` when it cannot be read.
 pub(crate) fn load_summary_from_dir(dir: &Path) -> Option<String> {
-    if let Some(summary) = read_newest_summary(dir) {
-        return Some(summary);
-    }
-    // Nothing to wait for when the session has no checkpoints directory at all.
-    if !dir.is_dir() {
-        return None;
-    }
-    std::thread::sleep(RETRY_DELAY);
     read_newest_summary(dir)
 }
 
@@ -58,7 +79,9 @@ pub(crate) fn push_session_summary(scrollback: &mut ScrollbackState, session: &A
     let Some(session_id) = session.session_id.as_ref() else {
         return;
     };
-    if let Some(summary) = load_compaction_summary(session_id.0.as_ref(), &session.cwd) {
+    if let Some(summary) =
+        load_compaction_summary(session_id.0.as_ref(), &session.cwd, IMMEDIATE_WAIT)
+    {
         push_summary(scrollback, summary);
     }
 }
@@ -66,7 +89,7 @@ pub(crate) fn push_session_summary(scrollback: &mut ScrollbackState, session: &A
 /// Push the folded summary block for an already-resolved checkpoints directory.
 /// The tracker defers the completion past the session's context, so it carries the directory instead.
 pub(crate) fn push_summary_from_dir(scrollback: &mut ScrollbackState, dir: &Path) {
-    if let Some(summary) = load_summary_from_dir(dir) {
+    if let Some(summary) = wait_for_summary(dir, IMMEDIATE_WAIT) {
         push_summary(scrollback, summary);
     }
 }

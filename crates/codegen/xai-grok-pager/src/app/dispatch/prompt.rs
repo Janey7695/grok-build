@@ -1969,6 +1969,7 @@ pub(super) fn handle_compact_complete(
         let elapsed = agent.turn_elapsed();
         agent.session.finish_command();
 
+        let mut summary_effects = Vec::new();
         match &result {
             Ok(()) => {
                 agent.scrollback.push_block(RenderBlock::session_event(
@@ -1976,10 +1977,14 @@ pub(super) fn handle_compact_complete(
                         elapsed: elapsed.unwrap_or_default(),
                     },
                 ));
-                crate::app::compaction_summary::push_session_summary(
-                    &mut agent.scrollback,
-                    &agent.session,
-                );
+                // The checkpoint file lands asynchronously, so the read waits on the blocking pool rather than here.
+                if let Some(session_id) = agent.session.session_id.as_ref() {
+                    summary_effects.push(Effect::FetchCompactionSummary {
+                        agent_id,
+                        session_id: session_id.0.to_string(),
+                        cwd: agent.session.cwd.clone(),
+                    });
+                }
             }
             // Typed kind with old-shell text fallback, per `compact_error`.
             Err(err) if was_cancelling || err.cancelled => {
@@ -2003,11 +2008,12 @@ pub(super) fn handle_compact_complete(
         agent.last_activity = None;
 
         if app.reconnect_pending {
-            return vec![];
+            return summary_effects;
         }
         let drain = maybe_drain_queue(agent, &mut app.pending_image_notices);
         note_peek_page_flip(app, agent_id, drain.page_flip_entry);
-        return drain.effects;
+        summary_effects.extend(drain.effects);
+        return summary_effects;
     }
     vec![]
 }

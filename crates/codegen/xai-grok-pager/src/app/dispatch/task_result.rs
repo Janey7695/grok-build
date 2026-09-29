@@ -65,6 +65,7 @@ use crate::app::command_catalog::CommandCatalogSource;
 use crate::app::dispatch::settings;
 use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::MemoryCommandKind;
+use crate::scrollback::blocks::SessionEvent;
 use agent_client_protocol as acp;
 pub(super) fn unregister_session_effect(session_id: Option<acp::SessionId>) -> Vec<Effect> {
     session_id
@@ -963,6 +964,22 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         }
         TaskResult::CompactComplete { agent_id, result } => {
             handle_compact_complete(app, agent_id, result)
+        }
+        TaskResult::CompactionSummaryLoaded { agent_id, summary } => {
+            let Some(agent) = app.agents.get_mut(&agent_id) else {
+                return vec![];
+            };
+            match summary {
+                Some(summary) => {
+                    // The deferred flush would otherwise repeat this summary next to the token line it prints at turn end
+                    agent.session.note_compaction_summary_shown();
+                    agent.scrollback.push_block(RenderBlock::session_event(
+                        SessionEvent::CompactionSummary { summary },
+                    ));
+                }
+                None => tracing::debug!("no compaction summary to show for /compact"),
+            }
+            vec![]
         }
         TaskResult::MemoryFlushComplete { agent_id, result } => handle_memory_command_complete(
             app,

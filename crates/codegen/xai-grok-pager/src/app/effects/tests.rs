@@ -177,6 +177,46 @@ fn prompt_request_meta_omits_screen_mode_when_unset() {
     assert_eq!(meta, serde_json::json!({ "promptId": "p-2" }));
 }
 /// Text-only interjections must omit the `content` key entirely; the legacy `x.ai/interject` wire shape stays byte-identical.
+/// The summary body the shell writes into a checkpoint's user message.
+const COMPACTION_CHECKPOINT_SUMMARY: &str = "This session is being continued from a previous conversation that ran out of context.\n\nSummary:\n1. Fix the parser";
+
+#[tokio::test]
+#[serial_test::serial(GROK_HOME)]
+async fn fetch_compaction_summary_reads_the_newest_checkpoint() {
+    let mut home = crate::test_util::GrokHomeFixture::new();
+    let cwd = home.cwd_str();
+    home.write_compaction_checkpoint(
+        &cwd,
+        "s1",
+        "ckpt",
+        crate::test_util::compaction_summary_message(COMPACTION_CHECKPOINT_SUMMARY),
+    );
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut tasks = JoinSet::new();
+    execute(
+        Effect::FetchCompactionSummary {
+            agent_id: crate::app::agent::AgentId(0),
+            session_id: "s1".to_string(),
+            cwd: PathBuf::from(&cwd),
+        },
+        &mut tasks,
+        &tx,
+        Path::new("."),
+        &SessionFlags::default(),
+        &progress_tx,
+    );
+
+    match tasks.join_next().await.expect("task").expect("no panic") {
+        TaskResult::CompactionSummaryLoaded { agent_id, summary } => {
+            assert_eq!(agent_id, crate::app::agent::AgentId(0));
+            assert_eq!(summary.as_deref(), Some(COMPACTION_CHECKPOINT_SUMMARY));
+        }
+        other => panic!("expected CompactionSummaryLoaded, got {other:?}"),
+    }
+}
+
 #[test]
 fn interject_params_omit_content_when_no_blocks() {
     let sid = acp::SessionId::new("s1");

@@ -326,6 +326,8 @@ pub struct PendingCompaction {
     /// The session's `compaction_checkpoints` directory, so the flush can read back the summary text.
     /// Resolved by the caller: the tracker has no session directory of its own.
     pub checkpoints_dir: Option<std::path::PathBuf>,
+    /// Set when a manual `/compact` already showed this compaction's summary, so the flush keeps only its token line.
+    pub summary_shown: bool,
 }
 /// Names one batch on both `HookRunStarted` and `HookExecution`; an outcome ends the phase only for the batch that armed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -627,7 +629,14 @@ impl AcpUpdateTracker {
             elapsed_ms,
             last_used: None,
             checkpoints_dir,
+            summary_shown: false,
         });
+    }
+    /// Mark the pending compaction's summary as already on screen (manual `/compact` shows it itself).
+    pub fn note_compaction_summary_shown(&mut self) {
+        if let Some(pending) = self.pending_compaction.as_mut() {
+            pending.summary_shown = true;
+        }
     }
     pub fn note_context_used(&mut self, used: u64) {
         if let Some(pending) = self.pending_compaction.as_mut() {
@@ -1043,7 +1052,9 @@ impl AcpUpdateTracker {
                     elapsed_ms: pending.elapsed_ms,
                 },
             ));
-            if let Some(dir) = pending.checkpoints_dir.as_deref() {
+            if let Some(dir) = pending.checkpoints_dir.as_deref()
+                && !pending.summary_shown
+            {
                 crate::app::compaction_summary::push_summary_from_dir(scrollback, dir);
             }
         }

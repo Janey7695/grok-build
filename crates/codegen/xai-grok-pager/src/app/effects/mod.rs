@@ -902,6 +902,24 @@ pub(crate) fn execute(
                     }
                 });
         }
+        Effect::FetchCompactionSummary {
+            agent_id,
+            session_id,
+            cwd,
+        } => {
+            tasks.spawn(async move {
+                let summary = tokio::task::spawn_blocking(move || {
+                    crate::app::compaction_summary::load_compaction_summary(
+                        &session_id,
+                        &cwd,
+                        crate::app::compaction_summary::MANUAL_COMPACT_WAIT,
+                    )
+                })
+                .await
+                .unwrap_or(None);
+                TaskResult::CompactionSummaryLoaded { agent_id, summary }
+            });
+        }
         Effect::LoadWorkspaceSnapshot { db_path } => {
             tasks
                 .spawn(async move {
