@@ -428,6 +428,18 @@ panic = "unwind"
 inherits = "release-dist"
 # All settings now match the parent — this is an intentional alias.
 
+# Fastest local build: fat LTO and a single codegen unit across the whole graph, no debug
+# info or symbols. Slower to link than release-dist (thin LTO); `--release` stays the
+# fast-iteration default, so use `cargo build --profile release-opt` when the extra
+# optimization is worth the link time.
+[profile.release-opt]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+debug = false
+strip = "symbols"
+incremental = false
+
 # Size-optimized profile for prod-admin-cli distribution builds. Cargo ignores
 # profiles in non-root manifests, so this lives here instead of the CLI crate.
 [profile.admin-cli-dist]
