@@ -8,9 +8,12 @@
 //! xai-grok-pager: Grok Build TUI.
 //!
 //! A clean-room implementation built on the v3 pager rendering engine.
+#![deny(clippy::indexing_slicing)]
 pub mod acp;
 pub mod actions;
+pub mod agent_runtime;
 pub mod app;
+pub mod best_effort_stderr;
 pub mod client_identity;
 pub mod completions_cmd;
 mod config_toml_edit;
@@ -33,6 +36,8 @@ pub mod memory_trace;
 pub mod minimal_api;
 #[path = "minimal/hook.rs"]
 pub mod minimal_hook;
+#[path = "minimal/reprint.rs"]
+pub mod minimal_reprint;
 pub mod models;
 pub mod notifications;
 #[allow(unused_imports, unused_macros)]
@@ -44,11 +49,13 @@ pub mod scrollback;
 pub mod sessions_cmd;
 pub mod settings;
 pub mod share_cmd;
+pub mod signal_streams;
 pub mod slash;
 pub mod startup;
 pub mod tips;
 pub mod tool_usage;
 pub mod tutorial_docs;
+pub mod usage_cmd;
 pub mod wrap_clipboard_image;
 pub mod wrap_cmd;
 pub(crate) mod wrap_filter;

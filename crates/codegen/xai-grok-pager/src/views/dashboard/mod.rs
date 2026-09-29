@@ -1,4 +1,4 @@
-//! The agent dashboard lists every top-level agent and its subagents, grouped by state, with peek, attach, and dispatch actions.
+//! The agent dashboard lists every top-level agent, grouped by state, with peek, attach, and dispatch actions.
 //!
 //! Owned by `AppView::dashboard` (`Option<DashboardState>`); active only when `app.active_view == ActiveView::AgentDashboard`.
 //! State survives the user closing and reopening the dashboard within a single pager process (the `Option` is reset only on shutdown).
@@ -6,32 +6,47 @@
 //! ## Module layout
 //!
 //! - [`state`]: public `DashboardState`, `DashboardRowId`, `RowState`, `Grouping`, `Filter`, `FilterValue`, `PersistedDashboard`.
-//! - [`row`]: `DashboardRow`, `build_rows()`, classifiers, sort.
+//! - [`row`]: `DashboardRow`, `build_rows_with_roster()`, classifiers, sort.
+//! - [`row_activity`]: parent activity, secondary-line text, and live-work badge counts.
+//! - [`row_title`]: title, subtitle, and chip painting for wide and narrow rows.
 //! - [`layout`]: pure rect computation.
 //! - [`render`]: `Widget`-style rendering routine.
+//! - [`chrome`]: the header row and the primary actions row above the list.
+//! - [`actions_focus`]: the keyboard cursor on the actions row and its `←`/`→` walk.
 //! - [`peek`]: peek panel state and rendering.
+//! - [`usage_modal`]: input routing for the dashboard-hosted `/usage` modal.
 //!
 //! ## Lifetime
 //!
 //! Rows are rebuilt every render frame off `app.agents`; nothing is cached.
 //! The per-row sort key (state and last_change_at) is recomputed each frame; with single-digit agent counts in one pager process this is free.
 
+mod actions_focus;
+pub(crate) mod animation;
+mod chrome;
 pub mod layout;
 pub mod peek;
 pub mod peek_tail;
+mod preview;
 pub mod render;
 pub mod row;
+mod row_activity;
+mod row_title;
+mod search;
 pub mod state;
+#[cfg(test)]
+mod test_support;
+mod usage_modal;
 
-pub use render::render_dashboard;
-pub use render::{
-    DashboardOverlayChrome, HeaderUpgradeCta, popup_rect, render_dashboard_session_header,
-    render_dashboard_session_overlay, render_popup_overlay,
-};
+pub use chrome::HeaderUpgradeCta;
+pub(crate) use render::render_dashboard;
+pub use render::{popup_rect, render_popup_overlay};
 pub use row::{
-    DashboardRow, RowBadge, build_rows, build_rows_with_roster, build_rows_with_workspace,
-    classify_subagent, classify_top_level, roster_activity_to_state, sort_rows,
+    DashboardRow, RowBadge, build_rows_with_roster, classify_top_level, roster_activity_to_state,
+    sort_rows,
 };
+pub(crate) use row::{WorkspaceRowInputs, build_rows_with_workspace};
+pub(crate) use state::DashboardStopAction;
 pub use state::{
     DashboardDispatchMode, DashboardRowId, DashboardState, Filter, FilterValue, Focusable,
     Grouping, LocationCandidate, LocationPickerState, PendingDispatchModel, PersistedDashboard,
@@ -39,26 +54,26 @@ pub use state::{
     parse_filter, parse_row_state_token,
 };
 
-/// Top-level agents visible in the dashboard's row list, in the exact order [`render_dashboard`] paints them.
-/// The session overlay's cycle (the `[‹]` / `[›]` chips and `dispatch_dashboard_overlay_cycle`) reads this order.
-/// "Previous" / "next" then follow what the user actually sees instead of the agent map's insertion order.
-/// Subagent rows and `… N more` placeholders are skipped; only attachable top-level rows show up.
+/// Top-level agents visible in the dashboard's row list, in the exact order [`render_dashboard`]
+/// paints them. "Previous" / "next" then follow what the user actually sees instead of the agent
+/// map's insertion order.
 pub fn overlay_cycle_order(
     state: &DashboardState,
     agents: &indexmap::IndexMap<crate::app::agent::AgentId, crate::app::agent_view::AgentView>,
 ) -> Vec<crate::app::agent::AgentId> {
     let home = render::cached_home();
-    let rows = build_rows(
+    let rows = build_rows_with_roster(
         agents,
         &state.pinned,
         &state.reorder,
         state.grouping,
         &state.filter,
         home,
+        &[],
     );
     rows.iter()
         .filter_map(|r| match &r.id {
-            DashboardRowId::TopLevel(id) if !r.is_more_placeholder => Some(*id),
+            DashboardRowId::TopLevel(id) => Some(*id),
             _ => None,
         })
         .collect()
@@ -77,10 +92,8 @@ pub fn dashboard_enabled() -> bool {
     state::load_persisted_enabled().unwrap_or(true)
 }
 
-/// Command to name in the "use /X to switch between sessions" session banners (the `/new` session-created banner and the fork marker).
-/// Minimal mode refuses `/dashboard` but keeps the `/resume` session picker, so point at that whatever the dashboard flag says.
-/// Outside minimal, `/dashboard` when the feature is enabled.
-/// `None` when it is off: the tip would name a refused command, so callers fall back to a plain session-id banner.
+/// `None` when it is off: the tip would name a refused command, so callers fall back to a plain
+/// session-id banner.
 pub(crate) fn session_switch_hint_command(minimal: bool) -> Option<&'static str> {
     if minimal {
         Some("/resume")
